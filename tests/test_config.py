@@ -1,0 +1,119 @@
+"""
+D0PA1 minimal pre-registered config validation (runnable directly, no
+pytest). Covers: config_hash is reproducible for identical values and
+sensitive to a changed value (same contract as controls/null_input.py's
+NullInputConfig.config_hash, tested the same way in tests/test_controls.py),
+and that simulation.models sources its clip epsilon from this config
+rather than a disconnected literal.
+"""
+
+import os
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from simulation.config import PreRegisteredConfig, PRE_REGISTERED_CONFIG
+
+
+def check_hash_reproducible_and_sensitive():
+    c1 = PreRegisteredConfig(log_loss_clip_eps=1e-15)
+    c2 = PreRegisteredConfig(log_loss_clip_eps=1e-15)
+    c3 = PreRegisteredConfig(log_loss_clip_eps=1e-12)
+    same = c1.config_hash() == c2.config_hash()
+    different = c1.config_hash() != c3.config_hash()
+    return same and different, (c1.config_hash(), c2.config_hash(), c3.config_hash())
+
+
+def check_models_sources_eps_from_config():
+    from simulation.models import LOG_LOSS_CLIP_EPS
+    ok = LOG_LOSS_CLIP_EPS == PRE_REGISTERED_CONFIG.log_loss_clip_eps
+    return ok, {"models.LOG_LOSS_CLIP_EPS": LOG_LOSS_CLIP_EPS, "config.log_loss_clip_eps": PRE_REGISTERED_CONFIG.log_loss_clip_eps}
+
+
+def check_client_accepted_thresholds_load_bearing_and_correct():
+    """D0PA1_Client_SignOff_001.md #2 (2026-09-18): delta_gate3,
+    delta_attention, delta_audio, delta_latent (0.05 nats each) and
+    leakage_diagnostic_threshold_nats (0.10 nats = 2x delta_gate3) must be
+    real, hashed fields -- same standard as every other PreRegisteredConfig
+    field -- and the leakage threshold must actually equal 2x delta_gate3,
+    not merely be documented as such."""
+    base = PreRegisteredConfig()
+    ok = base.delta_gate3 == 0.05 == base.delta_attention == base.delta_audio == base.delta_latent
+    ok = ok and base.leakage_diagnostic_threshold_nats == 0.10
+    ok = ok and base.leakage_diagnostic_threshold_nats == 2 * base.delta_gate3
+
+    different = PreRegisteredConfig(delta_gate3=0.06)
+    ok = ok and base.config_hash() != different.config_hash()
+
+    # No decision-making code anywhere reads these back (G1) -- grep every
+    # .py file outside this test and simulation/config.py itself.
+    import subprocess
+    hits = subprocess.run(
+        ["git", "grep", "-l", "-E", "delta_gate3|delta_attention|delta_audio|delta_latent|leakage_diagnostic_threshold_nats",
+         "--", "*.py"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    # av_sync_flash.py's own docstring names these fields only as a
+    # comparison analogy for k_v/k_a's own hashed-not-compared treatment --
+    # prose, not a decision-code reference; allowlisted rather than
+    # excluded from the search.
+    allowed = ("simulation/config.py", "tests/test_config.py", "av_sync_flash.py")
+    unexpected = [h for h in hits if h not in allowed]
+    ok = ok and not unexpected
+
+    return ok, {
+        "delta_gate3": base.delta_gate3, "leakage_threshold": base.leakage_diagnostic_threshold_nats,
+        "hash_changes_with_delta_gate3": base.config_hash() != different.config_hash(),
+        "unexpected_referencing_files": unexpected,
+    }
+
+
+def check_gate0_a2_fields_sourced_from_config():
+    """Gate 0 A2: zero_dispersion_epsilon, camera_index, and
+    fps_report_interval_seconds must each be sourced from
+    PRE_REGISTERED_CONFIG at their (former) local-constant call sites, not
+    duplicated as a second, driftable literal."""
+    import controls.null_input as null_input
+    import stage1_step4_vectors as s1
+
+    checks = {
+        "null_input.ZERO_DISPERSION_EPSILON": (null_input.ZERO_DISPERSION_EPSILON, PRE_REGISTERED_CONFIG.zero_dispersion_epsilon),
+        "s1.CAMERA_INDEX": (s1.CAMERA_INDEX, PRE_REGISTERED_CONFIG.camera_index),
+        "s1.FPS_REPORT_INTERVAL_SECONDS": (s1.FPS_REPORT_INTERVAL_SECONDS, PRE_REGISTERED_CONFIG.fps_report_interval_seconds),
+    }
+    ok = all(actual == expected for actual, expected in checks.values())
+    return ok, {k: v for k, v in checks.items()}
+
+
+if __name__ == "__main__":
+    failures = []
+
+    ok, detail = check_hash_reproducible_and_sensitive()
+    print(f"[1/4] CONFIG_HASH REPRODUCIBLE + SENSITIVE TO CHANGE -- {'PASS' if ok else 'FAIL'}: {detail}")
+    if not ok:
+        failures.append(f"config_hash did not behave as expected: {detail}")
+
+    ok, detail = check_models_sources_eps_from_config()
+    print(f"[2/4] MODELS.PY SOURCES CLIP EPS FROM PRE_REGISTERED_CONFIG -- {'PASS' if ok else 'FAIL'}: {detail}")
+    if not ok:
+        failures.append(f"simulation.models is not sourcing its epsilon from the pre-registered config: {detail}")
+
+    ok, detail = check_gate0_a2_fields_sourced_from_config()
+    print(f"[3/4] GATE 0 A2 FIELDS SOURCED FROM PRE_REGISTERED_CONFIG (not duplicated) -- {'PASS' if ok else 'FAIL'}: {detail}")
+    if not ok:
+        failures.append(f"a moved Gate 0 A2 field has drifted from its config source: {detail}")
+
+    ok, detail = check_client_accepted_thresholds_load_bearing_and_correct()
+    print(f"[4/4] CLIENT-ACCEPTED THRESHOLDS LOAD-BEARING, CORRECT, NEVER READ BY DECISION CODE -- {'PASS' if ok else 'FAIL'}: {detail}")
+    if not ok:
+        failures.append(f"client-accepted threshold fields failed validation: {detail}")
+
+    print()
+    if failures:
+        print(f"CONFIG VALIDATION: FAIL ({len(failures)} issue(s))")
+        for f in failures:
+            print(f"  - {f}")
+        sys.exit(1)
+    print("CONFIG VALIDATION: PASS")
