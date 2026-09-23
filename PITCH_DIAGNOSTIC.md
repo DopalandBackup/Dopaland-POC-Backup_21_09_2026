@@ -1,4 +1,11 @@
+# Pitch-Blindness Diagnostic — compute_v_so and "look down"/"look up"
 
+**Type:** READ-ONLY diagnostic. No code, thresholds, or data were changed.
+**Symptom:** across 3 real capture sessions (`logs/orientation_trials.jsonl`), `look_down` reads `oriented_rate = 1.0` every time; `look_up` reads 0.86–1.0. Both should read LOW.
+
+## Bottom line
+
+**VERDICT: PITCH ANGLE UNRELIABLE.** The orientation formula treats pitch and yaw identically (not ignored, not unweighted), and the yaw↔pitch decomposition formula is mathematically exact (verified against synthetic ground-truth rotations). But the actual pitch VALUE reported by `yaw_pitch_roll_from_matrix` during real, instructed "look down" attempts stays small (mostly 0–5°) even though the same pitch channel demonstrably CAN register large values (15–18°) elsewhere in the same footage. This is a tracking-reliability problem specific to sustained downward head nods, not a formula bug and not a weighting/threshold oversight — there is no cheap one-line fix here.
 
 ---
 
